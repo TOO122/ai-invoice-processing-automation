@@ -1,0 +1,727 @@
+{
+  "name": "AI Invoice Processing & Validation",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "triggerOn": "specificFolder",
+        "folderToWatch": {
+          "__rl": true,
+          "value": "1d5PK11BdEfsdmYr2E0zGW0t2OzKXZNpd",
+          "mode": "list",
+          "cachedResultName": "Incoming Invoices",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1d5PK11BdEfsdmYr2E0zGW0t2OzKXZNpd"
+        },
+        "event": "fileCreated",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDriveTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "65fa2f0e-5b47-4973-a409-0760031440ee",
+      "name": "Google Drive Trigger",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "SrBQrgSrZWftM23J",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        208,
+        0
+      ],
+      "id": "76b6d08c-ace0-4b17-89b5-0cdfd6f2afa1",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "SrBQrgSrZWftM23J",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        416,
+        0
+      ],
+      "id": "d13d3160-ba08-417c-95cf-3b730f384ba1",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.text }}",
+        "attributes": {
+          "attributes": [
+            {
+              "name": "Vendor Name",
+              "description": "Name of the supplier/vendor listed on the invoice",
+              "required": true
+            },
+            {
+              "name": "Invoice Number",
+              "description": "The unique invoice number assigned to the invoice",
+              "required": true
+            },
+            {
+              "name": "Invoice Date",
+              "description": "The date shown on the invoice",
+              "required": true
+            },
+            {
+              "name": "PO Number",
+              "description": "The purchase order number shown on the invoice"
+            },
+            {
+              "name": "Due Date",
+              "description": "The payment due date stated on the invoice"
+            },
+            {
+              "name": "Currency",
+              "description": "The currency used for the invoice amounts",
+              "required": true
+            },
+            {
+              "name": "Subtotal",
+              "type": "number",
+              "description": "The invoice subtotal before tax or VAT is added",
+              "required": true
+            },
+            {
+              "name": "Tax",
+              "type": "number",
+              "description": "The total tax or VAT amount charged on the invoice",
+              "required": true
+            },
+            {
+              "name": "Total Amount",
+              "type": "number",
+              "description": "The final amount due on the invoice, including tax or VAT",
+              "required": true
+            },
+            {
+              "name": "Payment Details",
+              "description": "Bank account or payment information provided on the invoice"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        624,
+        0
+      ],
+      "id": "f13318e7-61b5-441a-a35c-304fec04a5bd",
+      "name": "Information Extractor"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        560,
+        208
+      ],
+      "id": "bacebbb1-469e-405d-8887-bd6e51581171",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "qZ2IRjKtJN7yY6d5",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const invoiceItems = $(\"Information Extractor\").all();\nconst duplicateItems = $(\"Check Duplicate Invoice\").all();\n\nfunction cleanText(value) {\n  return String(value ?? \"\").trim();\n}\n\nfunction parseAmount(value) {\n  const cleaned = cleanText(value)\n    .replace(/,/g, \"\")\n    .replace(/[₦$€£]/g, \"\")\n    .replace(/\\s/g, \"\");\n\n  if (cleaned === \"\") {\n    return NaN;\n  }\n\n  return Number(cleaned);\n}\n\nfunction parseInvoiceDate(value) {\n  const text = cleanText(value);\n\n  if (!text) {\n    return null;\n  }\n\n  const date = new Date(text);\n\n  if (Number.isNaN(date.getTime())) {\n    return null;\n  }\n\n  date.setHours(0, 0, 0, 0);\n  return date;\n}\n\nreturn invoiceItems.map(item => {\n  const extractedData = item.json.output || item.json;\n\n  // Copy the extracted invoice information\n  const data = { ...extractedData };\n\n  // Make sure these fields always exist\n  data[\"PO Number\"] = data[\"PO Number\"] || \"\";\n  data[\"Payment Details\"] = data[\"Payment Details\"] || \"\";\n\n  // Store every detected problem here\n  const issues = [];\n\n  // Required invoice fields\n  const requiredFields = [\n    \"Vendor Name\",\n    \"Invoice Number\",\n    \"Invoice Date\",\n    \"PO Number\",\n    \"Due Date\",\n    \"Currency\",\n    \"Subtotal\",\n    \"Tax\",\n    \"Total Amount\",\n    \"Payment Details\"\n  ];\n\n  // Track specific types of problems\n  let hasSeriousFinancialProblem = false;\n  let hasDateProblem = false;\n\n  // --------------------------------------------------\n  // 1. Check for missing fields\n  // --------------------------------------------------\n\n  const missingFields = requiredFields.filter(field => {\n    return cleanText(data[field]) === \"\";\n  });\n\n  if (missingFields.length > 0) {\n    issues.push(\n      \"Missing invoice information: \" +\n      missingFields.join(\", \") +\n      \".\"\n    );\n  }\n\n  // --------------------------------------------------\n  // 2. Check the invoice amounts\n  // --------------------------------------------------\n\n  const subtotal = parseAmount(data[\"Subtotal\"]);\n  const tax = parseAmount(data[\"Tax\"]);\n  const totalAmount = parseAmount(data[\"Total Amount\"]);\n\n  if (!Number.isFinite(subtotal)) {\n    issues.push(\"Subtotal is missing or not a valid number.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  if (!Number.isFinite(tax)) {\n    issues.push(\"Tax is missing or not a valid number.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  if (!Number.isFinite(totalAmount)) {\n    issues.push(\"Total Amount is missing or not a valid number.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  // Check for negative amounts\n  if (Number.isFinite(subtotal) && subtotal < 0) {\n    issues.push(\"Subtotal cannot be negative.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  if (Number.isFinite(tax) && tax < 0) {\n    issues.push(\"Tax cannot be negative.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  if (Number.isFinite(totalAmount) && totalAmount < 0) {\n    issues.push(\"Total Amount cannot be negative.\");\n    hasSeriousFinancialProblem = true;\n  }\n\n  // Check subtotal plus tax against total amount\n  if (\n    Number.isFinite(subtotal) &&\n    Number.isFinite(tax) &&\n    Number.isFinite(totalAmount)\n  ) {\n    const expectedTotal = subtotal + tax;\n    const difference = Math.abs(expectedTotal - totalAmount);\n\n    if (difference > 1) {\n      issues.push(\n        \"Invoice total is incorrect. Expected \" +\n        expectedTotal +\n        \" but the invoice shows \" +\n        totalAmount +\n        \".\"\n      );\n\n      hasSeriousFinancialProblem = true;\n    }\n  }\n\n  // --------------------------------------------------\n  // 3. Check the currency\n  // --------------------------------------------------\n\n  const currency = cleanText(data[\"Currency\"]);\n\n  if (currency === \"\") {\n    issues.push(\"Currency is missing.\");\n  } else {\n    const allowedCurrencies = [\n      \"NGN\",\n      \"USD\",\n      \"EUR\",\n      \"GBP\",\n      \"CAD\",\n      \"AUD\",\n      \"ZAR\",\n      \"GHS\",\n      \"KES\"\n    ];\n\n    if (!allowedCurrencies.includes(currency.toUpperCase())) {\n      issues.push(\n        \"Currency may be invalid or unsupported: \" +\n        currency +\n        \".\"\n      );\n    }\n  }\n\n  // --------------------------------------------------\n  // 4. Check invoice and due dates\n  // --------------------------------------------------\n\n  const invoiceDateText = cleanText(data[\"Invoice Date\"]);\n  const dueDateText = cleanText(data[\"Due Date\"]);\n\n  const invoiceDate = parseInvoiceDate(invoiceDateText);\n  const dueDate = parseInvoiceDate(dueDateText);\n\n  const today = new Date();\n  today.setHours(0, 0, 0, 0);\n\n  if (invoiceDateText !== \"\" && invoiceDate === null) {\n    issues.push(\n      \"Invoice Date is invalid: \" +\n      invoiceDateText +\n      \".\"\n    );\n\n    hasDateProblem = true;\n  }\n\n  if (dueDateText !== \"\" && dueDate === null) {\n    issues.push(\n      \"Due Date is invalid: \" +\n      dueDateText +\n      \".\"\n    );\n\n    hasDateProblem = true;\n  }\n\n  // Invoice date should not be after the due date\n  if (invoiceDate !== null && dueDate !== null) {\n    if (dueDate < invoiceDate) {\n      issues.push(\n        \"Due Date is earlier than the Invoice Date.\"\n      );\n\n      hasDateProblem = true;\n    }\n  }\n\n  // Invoice date should not be in the future\n  if (invoiceDate !== null && invoiceDate > today) {\n    issues.push(\n      \"Invoice Date is in the future.\"\n    );\n\n    hasDateProblem = true;\n  }\n\n  // Check whether the invoice is overdue\n  if (dueDate !== null && dueDate < today) {\n    issues.push(\n      \"Invoice is overdue because the Due Date has passed.\"\n    );\n  }\n\n  // --------------------------------------------------\n  // 5. Check the invoice number\n  // --------------------------------------------------\n\n  const currentInvoiceNumber = cleanText(\n    data[\"Invoice Number\"]\n  );\n\n  if (currentInvoiceNumber !== \"\") {\n    const duplicateFound = duplicateItems.some(duplicateItem => {\n      const duplicateData = duplicateItem.json || {};\n\n      const existingInvoiceNumber = cleanText(\n        duplicateData[\"Invoice Number\"]\n      );\n\n      return (\n        existingInvoiceNumber !== \"\" &&\n        existingInvoiceNumber === currentInvoiceNumber\n      );\n    });\n\n    if (duplicateFound) {\n      issues.push(\n        \"Duplicate invoice number found in Google Sheets.\"\n      );\n    }\n\n    data[\"Duplicate\"] = duplicateFound ? \"Yes\" : \"No\";\n\n    // Duplicate invoices are serious\n    if (duplicateFound) {\n      hasSeriousFinancialProblem = true;\n    }\n  } else {\n    data[\"Duplicate\"] = \"No\";\n  }\n\n  // --------------------------------------------------\n  // 6. Check important text fields\n  // --------------------------------------------------\n\n  if (cleanText(data[\"Vendor Name\"]) === \"\") {\n    issues.push(\"Vendor Name is missing.\");\n  }\n\n  if (cleanText(data[\"Invoice Number\"]) === \"\") {\n    issues.push(\"Invoice Number is missing.\");\n  }\n\n  if (cleanText(data[\"PO Number\"]) === \"\") {\n    issues.push(\"PO Number is missing.\");\n  }\n\n  if (cleanText(data[\"Payment Details\"]) === \"\") {\n    issues.push(\"Payment Details are missing.\");\n  }\n\n  // --------------------------------------------------\n  // 7. Decide the risk level\n  // --------------------------------------------------\n\n  let riskLevel = \"Low\";\n  let validationStatus = \"Passed\";\n  let approvalStatus = \"Pending\";\n\n  if (hasSeriousFinancialProblem || hasDateProblem) {\n    riskLevel = \"High\";\n    validationStatus = \"Failed\";\n    approvalStatus = \"Rejected / Escalate\";\n  } else if (issues.length > 0) {\n    riskLevel = \"Medium\";\n    validationStatus = \"Needs Review\";\n    approvalStatus = \"Pending Review\";\n  }\n\n  // --------------------------------------------------\n  // 8. Create the complete Notes field\n  // --------------------------------------------------\n\n  let notes = \"Invoice passed all basic validation checks.\";\n\n  if (issues.length > 0) {\n    notes = issues.join(\" \");\n  }\n\n  // --------------------------------------------------\n  // 9. Generate Invoice ID\n  // --------------------------------------------------\n\n  const invoiceId =\n    \"INV-\" +\n    Date.now() +\n    \"-\" +\n    Math.random()\n      .toString(36)\n      .substring(2, 8)\n      .toUpperCase();\n\n  // --------------------------------------------------\n  // 10. Nigeria processing date\n  // --------------------------------------------------\n\n  const processedDate = new Date()\n    .toLocaleString(\"en-CA\", {\n      timeZone: \"Africa/Lagos\",\n      year: \"numeric\",\n      month: \"2-digit\",\n      day: \"2-digit\",\n      hour: \"2-digit\",\n      minute: \"2-digit\",\n      second: \"2-digit\",\n      hour12: false\n    })\n    .replace(\",\", \"\");\n\n  // --------------------------------------------------\n  // 11. Add final fields\n  // --------------------------------------------------\n\n  data[\"Invoice ID\"] = invoiceId;\n  data[\"Risk Level\"] = riskLevel;\n  data[\"Validation Status\"] = validationStatus;\n  data[\"Approval Status\"] = approvalStatus;\n  data[\"Notes\"] = notes;\n  data[\"Processed Date\"] = processedDate;\n\n  return {\n    json: data\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        0
+      ],
+      "id": "2352f6c4-628b-4890-b4a6-49b07b79d67c",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json['Risk Level'] }}",
+                    "rightValue": "Low",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "629f3e17-e7b0-4da7-8741-614fac1fc930"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "eb591f89-15b6-4010-8424-44b83338ee73",
+                    "leftValue": "={{ $json['Risk Level'] }}",
+                    "rightValue": "Medium",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "359868bc-87ff-42ea-ba30-ca49f35ab23c",
+                    "leftValue": "={{ $json['Risk Level'] }}",
+                    "rightValue": "High",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1440,
+        0
+      ],
+      "id": "fb71a766-3f38-474b-b539-5dc8797e7b80",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "sendTo": "lovechy234@gmail.com",
+        "subject": "Invoice Processed - Low Risk",
+        "message": "=<h2>Invoice Processed - Low Risk</h2>\n\n<p>Hello,</p>\n\n<p>\nA new invoice has been processed and passed the basic validation checks.\n</p>\n\n<h3>Invoice Details</h3>\n\n<ul>\n  <li><strong>Invoice ID:</strong> {{ $json[\"Invoice ID\"] }}</li>\n  <li><strong>Vendor Name:</strong> {{ $json[\"Vendor Name\"] }}</li>\n  <li><strong>Invoice Number:</strong> {{ $json[\"Invoice Number\"] }}</li>\n  <li><strong>Invoice Date:</strong> {{ $json[\"Invoice Date\"] }}</li>\n  <li><strong>Due Date:</strong> {{ $json[\"Due Date\"] }}</li>\n  <li><strong>Currency:</strong> {{ $json[\"Currency\"] }}</li>\n  <li><strong>Subtotal:</strong> {{ $json[\"Subtotal\"] }}</li>\n  <li><strong>Tax:</strong> {{ $json[\"Tax\"] }}</li>\n  <li><strong>Total Amount:</strong> {{ $json[\"Total Amount\"] }}</li>\n  <li><strong>PO Number:</strong> {{ $json[\"PO Number\"] }}</li>\n  <li><strong>Payment Details:</strong> {{ $json[\"Payment Details\"] }}</li>\n  <li><strong>Risk Level:</strong> {{ $json[\"Risk Level\"] }}</li>\n  <li><strong>Validation Status:</strong> {{ $json[\"Validation Status\"] }}</li>\n  <li><strong>Duplicate:</strong> {{ $json[\"Duplicate\"] }}</li>\n  <li><strong>Approval Status:</strong> {{ $json[\"Approval Status\"] }}</li>\n  <li><strong>Notes:</strong> {{ $json[\"Notes\"] }}</li>\n  <li><strong>Processed Date:</strong> {{ $json[\"Processed Date\"] }}</li>\n</ul>\n\n<p>Thank you.</p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1648,
+        -112
+      ],
+      "id": "8916bec1-f2c9-4ff7-a6f4-ceae106b3d34",
+      "name": "Send a message",
+      "webhookId": "590ef154-5705-47b8-abde-7a938f0796cc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Jnfd60eLs0K6cJe0",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "lovechy234@gmail.com",
+        "subject": "Invoice Processed - Medium Risk",
+        "message": "=<h2>Invoice Processed - Medium Risk</h2>\n\n<p>Hello,</p>\n\n<p>A new invoice has been processed and requires further review.</p>\n\n<h3>Invoice Details</h3>\n\n<ul>\n  <li><strong>Invoice ID:</strong> {{ $json[\"Invoice ID\"] }}</li>\n  <li><strong>Vendor Name:</strong> {{ $json[\"Vendor Name\"] }}</li>\n  <li><strong>Invoice Number:</strong> {{ $json[\"Invoice Number\"] }}</li>\n  <li><strong>Invoice Date:</strong> {{ $json[\"Invoice Date\"] }}</li>\n  <li><strong>PO Number:</strong> {{ $json[\"PO Number\"] }}</li>\n  <li><strong>Due Date:</strong> {{ $json[\"Due Date\"] }}</li>\n  <li><strong>Currency:</strong> {{ $json[\"Currency\"] }}</li>\n  <li><strong>Subtotal:</strong> {{ $json[\"Subtotal\"] }}</li>\n  <li><strong>Tax:</strong> {{ $json[\"Tax\"] }}</li>\n  <li><strong>Total Amount:</strong> {{ $json[\"Total Amount\"] }}</li>\n  <li><strong>Payment Details:</strong> {{ $json[\"Payment Details\"] }}</li>\n</ul>\n\n<h3>Risk Assessment</h3>\n\n<ul>\n  <li><strong>Risk Level:</strong> {{ $json[\"Risk Level\"] }}</li>\n  <li><strong>Validation Status:</strong> {{ $json[\"Validation Status\"] }}</li>\n  <li><strong>Duplicate:</strong> {{ $json[\"Duplicate\"] }}</li>\n  <li><strong>Approval Status:</strong> {{ $json[\"Approval Status\"] }}</li>\n  <li><strong>Notes:</strong> {{ $json[\"Notes\"] }}</li>\n  <li><strong>Processed Date:</strong> {{ $json[\"Processed Date\"] }}</li>\n</ul>\n\n<p>This invoice requires further review before approval.</p>\n\n<p>Thank you.</p>\n\n<p><em>This email was sent automatically with n8n.</em></p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1744,
+        0
+      ],
+      "id": "d44d408e-c6a9-494e-9852-34a383d8c133",
+      "name": "Send a message1",
+      "webhookId": "590ef154-5705-47b8-abde-7a938f0796cc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Jnfd60eLs0K6cJe0",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "lovechy234@gmail.com",
+        "subject": "Invoice Processed - High Risk",
+        "message": "=<p>Hello,</p>\n\n<p>A new invoice has been processed and requires urgent review.</p>\n\n<h3>Invoice Details</h3>\n\n<ul>\n  <li><strong>Invoice ID:</strong> {{ $json[\"Invoice ID\"] }}</li>\n  <li><strong>Vendor Name:</strong> {{ $json[\"Vendor Name\"] }}</li>\n  <li><strong>Invoice Number:</strong> {{ $json[\"Invoice Number\"] }}</li>\n  <li><strong>Invoice Date:</strong> {{ $json[\"Invoice Date\"] }}</li>\n  <li><strong>PO Number:</strong> {{ $json[\"PO Number\"] }}</li>\n  <li><strong>Due Date:</strong> {{ $json[\"Due Date\"] }}</li>\n  <li><strong>Currency:</strong> {{ $json[\"Currency\"] }}</li>\n  <li><strong>Subtotal:</strong> {{ $json[\"Subtotal\"] }}</li>\n  <li><strong>Tax:</strong> {{ $json[\"Tax\"] }}</li>\n  <li><strong>Total Amount:</strong> {{ $json[\"Total Amount\"] }}</li>\n  <li><strong>Payment Details:</strong> {{ $json[\"Payment Details\"] }}</li>\n</ul>\n\n<h3>Risk Assessment</h3>\n\n<ul>\n  <li><strong>Risk Level:</strong> {{ $json[\"Risk Level\"] }}</li>\n  <li><strong>Validation Status:</strong> {{ $json[\"Validation Status\"] }}</li>\n  <li><strong>Duplicate:</strong> {{ $json[\"Duplicate\"] }}</li>\n  <li><strong>Approval Status:</strong> {{ $json[\"Approval Status\"] }}</li>\n  <li><strong>Notes:</strong> {{ $json[\"Notes\"] }}</li>\n  <li><strong>Processed Date:</strong> {{ $json[\"Processed Date\"] }}</li>\n</ul>\n\n<p><strong>Action Required:</strong> Please review this invoice urgently before payment is made.</p>\n\n<p>Thank you.</p>\n\n<p><em>This email was sent automatically with n8n.</em></p>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1872,
+        112
+      ],
+      "id": "c607cc33-e020-46e2-b064-f0cc3af7566b",
+      "name": "Send a message2",
+      "webhookId": "590ef154-5705-47b8-abde-7a938f0796cc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Jnfd60eLs0K6cJe0",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0",
+          "mode": "list",
+          "cachedResultName": "AI Invoice Processing",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Vendor Name": "={{ $json['Vendor Name'] }}",
+            "Invoice Number": "={{ $json['Invoice Number'] }}",
+            "Invoice Date": "={{ $json['Invoice Date'] }}",
+            "Due Date": "={{ $json['Due Date'] }}",
+            "Currency": "={{ $json.Currency }}",
+            "Subtotal": "={{ $json.Subtotal }}",
+            "Tax": "={{ $json.Tax }}",
+            "Total Amount": "={{ $json['Total Amount'] }}",
+            "PO Number": "={{ $json['PO Number'] }}",
+            "Payment Details": "={{ $json['Payment Details'] }}",
+            "Risk Level": "={{ $json['Risk Level'] }}",
+            "Notes": "={{ $json.Notes }}",
+            "Processed Date": "={{ $json['Processed Date'] }}",
+            "Invoice ID": "={{ $json['Invoice ID'] }}",
+            "Validation Status": "={{ $json['Validation Status'] }}",
+            "Duplicate": "={{ $json.Duplicate }}",
+            "Approval Status": "={{ $json['Approval Status'] }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Invoice ID",
+              "displayName": "Invoice ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Currency",
+              "displayName": "Currency",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Subtotal",
+              "displayName": "Subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tax",
+              "displayName": "Tax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total Amount",
+              "displayName": "Total Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "PO Number",
+              "displayName": "PO Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Payment Details",
+              "displayName": "Payment Details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Risk Level",
+              "displayName": "Risk Level",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Validation Status",
+              "displayName": "Validation Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Duplicate",
+              "displayName": "Duplicate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Approval Status",
+              "displayName": "Approval Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Notes",
+              "displayName": "Notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Processed Date",
+              "displayName": "Processed Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1232,
+        0
+      ],
+      "id": "0b6b9f12-b9d6-4c4b-a10b-1546aa0d4596",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "M6b9zll7Xm5F4LuY",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0",
+          "mode": "list",
+          "cachedResultName": "AI Invoice Processing",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1hNMWL6iWGFF9X8ZTwJJBDh1kF8kcCRa46ux-yg35Em0/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Invoice Number",
+              "lookupValue": "={{ $json.output[\"Invoice Number\"] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1120,
+        144
+      ],
+      "id": "7dd71177-fe3d-415b-953b-efa859f65f16",
+      "name": "Check Duplicate Invoice",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "M6b9zll7Xm5F4LuY",
+          "name": "Google Sheets account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Google Drive Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Information Extractor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Information Extractor",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Information Extractor": {
+      "main": [
+        [
+          {
+            "node": "Check Duplicate Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Duplicate Invoice": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "78e1b535-a6ab-4fc2-9f2d-dc871b2b96ec",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7b42e9dbd1ccb0c45d17059f67d457973d3cccc0facc973872992c3925cdc4ad"
+  },
+  "id": "B15LTUwj3y9iCcGn",
+  "tags": []
+}
